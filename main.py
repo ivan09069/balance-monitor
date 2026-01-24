@@ -1,13 +1,13 @@
 ﻿#!/usr/bin/env python3
 """
-Balance Monitor Service - 24/7 Multi-Chain Wallet Monitoring
-Monitors wallets, alerts on changes, feeds data to trading bots
+Balance Monitor Service - WITH AUTHENTICATION
 """
 import os
 import asyncio
 import aiohttp
 import json
 import logging
+import functools
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 import threading
@@ -17,15 +17,18 @@ log = logging.getLogger("BalanceMonitor")
 
 app = Flask(__name__)
 
-# RPC endpoints
-RPCS = {
-    "base": os.environ.get("BASE_RPC", "https://mainnet.base.org"),
-    "eth": os.environ.get("ETH_RPC", "https://eth.llamarpc.com"),
-    "arb": os.environ.get("ARB_RPC", "https://arb1.arbitrum.io/rpc"),
-    "poly": os.environ.get("POLY_RPC", "https://polygon-rpc.com"),
-}
+API_KEY = os.environ.get("API_KEY", "echoforge-monitor-2026")
 
-# Explorer APIs for balance checks
+def require_auth(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.headers.get('Authorization', '')
+        key = request.headers.get('X-API-Key', '')
+        if auth == f"Bearer {API_KEY}" or key == API_KEY:
+            return f(*args, **kwargs)
+        return jsonify({"error": "Unauthorized"}), 401
+    return decorated
+
 APIS = {
     "eth": "https://api.etherscan.io/api?module=account&action=balance&address={}&tag=latest",
     "base": "https://api.basescan.org/api?module=account&action=balance&address={}&tag=latest",
@@ -33,8 +36,7 @@ APIS = {
     "poly": "https://api.polygonscan.com/api?module=account&action=balance&address={}&tag=latest",
 }
 
-# State
-wallets = {}  # {address: {chain, label, last_balance, alerts}}
+wallets = {}
 balance_history = []
 alerts = []
 monitoring = False
@@ -48,12 +50,12 @@ async def check_balance(session, chain, address):
             if data.get("status") == "1":
                 return int(data["result"]) / 1e18
     except Exception as e:
-        log.error(f"Balance check failed {chain}/{address[:10]}: {e}")
+        log.error(f"Balance check failed: {e}")
     return None
 
 async def monitor_loop():
     global monitoring
-    log.info("Starting balance monitor loop...")
+    log.info("Monitor loop started")
     while monitoring:
         async with aiohttp.ClientSession() as session:
             for addr, info in wallets.items():
@@ -62,26 +64,12 @@ async def monitor_loop():
                     prev = info.get("last_balance", 0)
                     if prev != bal:
                         change = bal - prev
-                        log.info(f"{info.get('label', addr[:10])}: {prev:.6f} -> {bal:.6f} ({change:+.6f})")
-                        balance_history.append({
-                            "address": addr,
-                            "chain": info["chain"],
-                            "previous": prev,
-                            "current": bal,
-                            "change": change,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        })
-                        # Alert if significant change
+                        log.info(f"{info.get('label', addr[:10])}: {prev:.6f} -> {bal:.6f}")
+                        balance_history.append({"address": addr, "chain": info["chain"], "previous": prev, "current": bal, "change": change, "timestamp": datetime.now(timezone.utc).isoformat()})
                         if abs(change) > info.get("alert_threshold", 0.01):
-                            alerts.append({
-                                "type": "balance_change",
-                                "address": addr,
-                                "chain": info["chain"],
-                                "change": change,
-                                "timestamp": datetime.now(timezone.utc).isoformat()
-                            })
+                            alerts.append({"type": "balance_change", "address": addr, "change": change, "timestamp": datetime.now(timezone.utc).isoformat()})
                     wallets[addr]["last_balance"] = bal
-        await asyncio.sleep(30)  # Check every 30 seconds
+        await asyncio.sleep(30)
 
 def start_monitor():
     global monitoring
@@ -95,6 +83,7 @@ def health():
     return jsonify({"status": "ok", "service": "balance-monitor", "monitoring": monitoring, "wallets": len(wallets), "timestamp": datetime.now(timezone.utc).isoformat()})
 
 @app.route('/wallets', methods=['GET', 'POST'])
+@require_auth
 def manage_wallets():
     if request.method == 'POST':
         data = request.json
@@ -104,18 +93,22 @@ def manage_wallets():
     return jsonify({"wallets": wallets})
 
 @app.route('/balances', methods=['GET'])
+@require_auth
 def get_balances():
     return jsonify({"balances": {a: w.get("last_balance", 0) for a, w in wallets.items()}})
 
 @app.route('/history', methods=['GET'])
+@require_auth
 def get_history():
     return jsonify({"history": balance_history[-100:]})
 
 @app.route('/alerts', methods=['GET'])
+@require_auth
 def get_alerts():
     return jsonify({"alerts": alerts[-50:]})
 
 @app.route('/start', methods=['POST'])
+@require_auth
 def start():
     global monitoring
     if not monitoring:
@@ -125,15 +118,15 @@ def start():
     return jsonify({"status": "already running"})
 
 @app.route('/stop', methods=['POST'])
+@require_auth
 def stop():
     global monitoring
     monitoring = False
     return jsonify({"status": "stopped"})
 
 if __name__ == "__main__":
-    # Auto-start monitoring
     thread = threading.Thread(target=start_monitor, daemon=True)
     thread.start()
     port = int(os.environ.get("PORT", 10000))
-    log.info(f"Balance Monitor starting on port {port}")
+    log.info(f"Balance Monitor (AUTH ENABLED) starting on port {port}")
     app.run(host="0.0.0.0", port=port)
