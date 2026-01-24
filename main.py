@@ -107,6 +107,18 @@ def get_history():
 def get_alerts():
     return jsonify({"alerts": alerts[-50:]})
 
+@app.route('/trade-alert', methods=['POST'])
+def trade_alert():
+    """Receive trade notifications from Trade Executor - no auth needed for internal pipeline"""
+    data = request.json
+    log.info(f"Trade alert received: {json.dumps(data)}")
+    alerts.append({
+        "type": "trade_executed",
+        "trade": data,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    return jsonify({"status": "received"})
+
 @app.route('/start', methods=['POST'])
 @require_auth
 def start():
