@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Balance Monitor Service - WITH AUTHENTICATION
 """
@@ -8,6 +8,8 @@ import aiohttp
 import json
 import logging
 import functools
+import hashlib
+import hmac
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 import threading
@@ -16,15 +18,21 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(
 log = logging.getLogger("BalanceMonitor")
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 16384
 
-API_KEY = os.environ.get("API_KEY", "echoforge-monitor-2026")
+API_KEY = os.environ.get("API_KEY", "")
 
 def require_auth(f):
     @functools.wraps(f)
     def decorated(*args, **kwargs):
         auth = request.headers.get('Authorization', '')
         key = request.headers.get('X-API-Key', '')
-        if auth == f"Bearer {API_KEY}" or key == API_KEY:
+        if len(API_KEY) < 32:
+            return jsonify({"error": "API authentication not configured"}), 503
+        def matches(value):
+            return hmac.compare_digest(hashlib.sha256(value.encode()).digest(), hashlib.sha256(API_KEY.encode()).digest())
+        bearer = auth[7:] if auth.startswith('Bearer ') else ''
+        if matches(bearer) or matches(key):
             return f(*args, **kwargs)
         return jsonify({"error": "Unauthorized"}), 401
     return decorated
@@ -108,10 +116,13 @@ def get_alerts():
     return jsonify({"alerts": alerts[-50:]})
 
 @app.route('/trade-alert', methods=['POST'])
+@require_auth
 def trade_alert():
-    """Receive trade notifications from Trade Executor - no auth needed for internal pipeline"""
-    data = request.json
-    log.info(f"Trade alert received: {json.dumps(data)}")
+    """Receive authenticated trade notifications from Trade Executor."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    log.info("Authenticated trade alert received")
     alerts.append({
         "type": "trade_executed",
         "trade": data,
